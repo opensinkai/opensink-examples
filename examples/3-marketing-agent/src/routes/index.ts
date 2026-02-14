@@ -98,9 +98,15 @@ interface CommentOpportunity {
   engagement_score: number;
 }
 
+interface TrendEvidence {
+  text: string;
+  url: string;
+  author: string;
+}
+
 interface Trend {
   theme: string;
-  evidence_tweets: string[];
+  evidence_tweets: TrendEvidence[];
   sentiment: 'hype' | 'frustration' | 'curiosity' | 'fatigue';
   opensink_relevance: string;
 }
@@ -209,8 +215,17 @@ const analysisSchema = {
           theme: { type: 'string', description: 'Short theme name' },
           evidence_tweets: {
             type: 'array',
-            items: { type: 'string' },
-            description: 'Example tweet snippets as evidence',
+            items: {
+              type: 'object',
+              properties: {
+                text: { type: 'string', description: 'Tweet snippet as evidence (max 100 chars)' },
+                url: { type: 'string', description: 'URL to the tweet' },
+                author: { type: 'string', description: 'Twitter handle of the author' },
+              },
+              required: ['text', 'url', 'author'],
+              additionalProperties: false,
+            },
+            description: 'Example tweets as evidence with their URLs',
           },
           sentiment: { type: 'string', enum: ['hype', 'frustration', 'curiosity', 'fatigue'], description: 'Overall sentiment' },
           opensink_relevance: { type: 'string', description: 'How OpenSink relates — be honest when it does not' },
@@ -313,13 +328,19 @@ One paragraph. Be concise. If the run is boring, say so.`;
 // ---------------------------------------------------------------------------
 
 async function analyzeTwitterData(tweets: NormalizedTweet[]): Promise<AnalysisResult> {
-  const tweetList = tweets
+  // Limit tweets to avoid payload size issues - prioritize by engagement
+  const sortedTweets = [...tweets]
+    .sort((a, b) => (b.likes + b.retweets + b.replies) - (a.likes + a.retweets + a.replies))
+    .slice(0, 100);
+
+  const tweetList = sortedTweets
     .map((t, i) => {
       const engagement = t.likes + t.retweets + t.replies;
+      const truncatedText = t.text.length > 500 ? t.text.slice(0, 500) + '...' : t.text;
       return `${i + 1}. @${t.author} (${t.author_followers.toLocaleString()} followers) [engagement: ${engagement}]
 URL: ${t.url}
 Posted: ${t.created_at}
-"${t.text}"`;
+"${truncatedText}"`;
     })
     .join('\n\n');
 
@@ -374,7 +395,8 @@ function formatTelegramMessage(analysis: AnalysisResult): string {
     for (const trend of analysis.trends) {
       lines.push(`  ${trend.theme} [${trend.sentiment}]`);
       lines.push(`  OpenSink relevance: ${trend.opensink_relevance}`);
-      lines.push(`  Evidence: ${trend.evidence_tweets.slice(0, 2).join(' | ')}`);
+      const evidenceText = trend.evidence_tweets.slice(0, 2).map((e) => `@${e.author}: "${e.text}"`).join(' | ');
+      lines.push(`  Evidence: ${evidenceText}`);
       lines.push('');
     }
   }
@@ -578,6 +600,10 @@ export default async function routes(app: FastifyInstance) {
             engagement_score: opp.engagement_score,
             suggested_angle: opp.suggested_angle,
           },
+          resources: [
+            { type: 'link' as const, label: 'View Tweet', url: opp.tweet_url },
+            { type: 'link' as const, label: `@${opp.author}'s Profile`, url: `https://twitter.com/${opp.author}` },
+          ],
         }));
 
         const oppResult = await openSink.sinkItems.createMany(oppItems);
@@ -596,11 +622,16 @@ export default async function routes(app: FastifyInstance) {
         const trendItems = analysis.trends.map((trend) => ({
           sink_id: TRENDS_SINK_ID,
           title: `${trend.theme} [${trend.sentiment}]`,
-          body: `Evidence: ${trend.evidence_tweets.join(' | ')}\nOpenSink relevance: ${trend.opensink_relevance}`,
+          body: `Evidence: ${trend.evidence_tweets.map((e) => `@${e.author}: "${e.text}"`).join(' | ')}\nOpenSink relevance: ${trend.opensink_relevance}`,
           fields: {
             sentiment: trend.sentiment,
             opensink_relevance: trend.opensink_relevance,
           },
+          resources: trend.evidence_tweets.map((e) => ({
+            type: 'link' as const,
+            label: `@${e.author}'s Tweet`,
+            url: e.url,
+          })),
         }));
 
         const trendResult = await openSink.sinkItems.createMany(trendItems);
