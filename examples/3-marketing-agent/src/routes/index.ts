@@ -140,7 +140,7 @@ interface NewTool {
   name: string;
   description: string;
   url: string;
-  relationship: 'competitor' | 'potential_partner' | 'irrelevant';
+  relationship: 'competitor' | 'potential_partner' | 'complementary' | 'irrelevant';
   company_relevance: string;
   source_tweets: SourceTweet[];
 }
@@ -244,188 +244,17 @@ function normalizeTweets(raw: ApifyTweet[], minAuthorFollowers?: number): Normal
 }
 
 // ---------------------------------------------------------------------------
-// JSON Schema for structured GPT output (parameterized by company name)
+// GPT-4o Model
 // ---------------------------------------------------------------------------
 
-function buildAnalysisSchema(companyName: string) {
-  return {
-    type: 'object',
-    properties: {
-      comment_opportunities: {
-        type: 'array',
-        description: `Top 10 tweets where the founder could leave a valuable comment that naturally relates to ${companyName}.`,
-        items: {
-          type: 'object',
-          properties: {
-            tweet_text: { type: 'string', description: 'Truncated tweet text (max 200 chars)' },
-            tweet_url: { type: 'string', description: 'URL to the tweet' },
-            author: { type: 'string', description: 'Twitter handle of the author' },
-            author_followers: { type: 'number', description: 'Follower count of the author' },
-            why_comment: { type: 'string', description: 'Why this is a good opportunity to comment' },
-            suggested_angle: { type: 'string', description: 'Suggested angle for the comment — NOT the comment itself' },
-            engagement_score: { type: 'number', description: 'Combined engagement (likes + retweets + replies)' },
-          },
-          required: ['tweet_text', 'tweet_url', 'author', 'author_followers', 'why_comment', 'suggested_angle', 'engagement_score'],
-          additionalProperties: false,
-        },
-      },
-      trends: {
-        type: 'array',
-        description: 'Top 5 emerging themes from the scraped data.',
-        items: {
-          type: 'object',
-          properties: {
-            theme: { type: 'string', description: 'Short theme name' },
-            evidence_tweets: {
-              type: 'array',
-              items: {
-                type: 'object',
-                properties: {
-                  text: { type: 'string', description: 'Tweet snippet as evidence (max 100 chars)' },
-                  url: { type: 'string', description: 'URL to the tweet' },
-                  author: { type: 'string', description: 'Twitter handle of the author' },
-                },
-                required: ['text', 'url', 'author'],
-                additionalProperties: false,
-              },
-              description: 'Example tweets as evidence with their URLs',
-            },
-            sentiment: { type: 'string', enum: ['hype', 'frustration', 'curiosity', 'fatigue'], description: 'Overall sentiment' },
-            company_relevance: { type: 'string', description: `How ${companyName} relates — be honest when it does not` },
-          },
-          required: ['theme', 'evidence_tweets', 'sentiment', 'company_relevance'],
-          additionalProperties: false,
-        },
-      },
-      new_tools: {
-        type: 'array',
-        description: 'New products, launches, or repos mentioned in the data.',
-        items: {
-          type: 'object',
-          properties: {
-            name: { type: 'string', description: 'Product or tool name' },
-            description: { type: 'string', description: 'What it does in one line' },
-            url: { type: 'string', description: 'Link to the tool/product' },
-            relationship: { type: 'string', enum: ['competitor', 'potential_partner', 'irrelevant'], description: `Relationship to ${companyName}` },
-            company_relevance: { type: 'string', description: `One line on how it relates to ${companyName}'s space` },
-            source_tweets: {
-              type: 'array',
-              items: {
-                type: 'object',
-                properties: {
-                  url: { type: 'string', description: 'URL to the tweet that mentioned this tool' },
-                  author: { type: 'string', description: 'Twitter handle of the author' },
-                },
-                required: ['url', 'author'],
-                additionalProperties: false,
-              },
-              description: 'Tweets that mentioned this tool/company',
-            },
-          },
-          required: ['name', 'description', 'url', 'relationship', 'company_relevance', 'source_tweets'],
-          additionalProperties: false,
-        },
-      },
-      tutorial_ideas: {
-        type: 'array',
-        description: `Top 3 "Build X with ${companyName}" tutorial ideas based on trends.`,
-        items: {
-          type: 'object',
-          properties: {
-            title: { type: 'string', description: 'Tutorial title' },
-            why_timely: { type: 'string', description: 'What trend this rides' },
-            outline: {
-              type: 'array',
-              items: { type: 'string' },
-              description: '3-5 bullet point outline',
-            },
-            effort: { type: 'string', enum: ['quick', 'medium', 'deep'], description: 'Estimated effort: quick (1hr), medium (half day), deep (full day)' },
-            source_tweets: {
-              type: 'array',
-              items: {
-                type: 'object',
-                properties: {
-                  url: { type: 'string', description: 'URL to the tweet that inspired this idea' },
-                  author: { type: 'string', description: 'Twitter handle of the author' },
-                },
-                required: ['url', 'author'],
-                additionalProperties: false,
-              },
-              description: 'Tweets that inspired this tutorial idea',
-            },
-          },
-          required: ['title', 'why_timely', 'outline', 'effort', 'source_tweets'],
-          additionalProperties: false,
-        },
-      },
-      run_summary: {
-        type: 'string',
-        description: 'One paragraph summary of this run. If nothing interesting was found, say so honestly.',
-      },
-    },
-    required: ['comment_opportunities', 'trends', 'new_tools', 'tutorial_ideas', 'run_summary'],
-    additionalProperties: false,
-  } as const;
-}
+const GPT_MODEL = 'gpt-4o';
 
 // ---------------------------------------------------------------------------
-// System prompt builder (parameterized by config)
+// Helper: format tweets for prompt
 // ---------------------------------------------------------------------------
 
-function buildSystemPrompt(config: AgentConfigValue): string {
-  return `You are Scout, a marketing intelligence agent for ${config.companyName} (${config.companyWebsite}).
-
-${config.companyDescription}
-
-Context about the founder:
-${config.founderContext}
-
-Your job: analyze scraped Twitter data and produce marketing intelligence.
-
-## Rules
-- Be blunt and honest. Don't force ${config.companyName} relevance where there is none.
-- Skip low-quality tweets, spam, and engagement bait.
-- Don't suggest commenting on the same accounts repeatedly — diversify.
-- Prioritize recency and engagement.
-- If the data has nothing interesting, say so. Don't pad the output.
-
-## Output sections
-
-### 1. Comment Opportunities (top 10)
-Find tweets where ${config.founderName} could leave a valuable comment that naturally relates to ${config.companyName}. Prioritize:
-- High engagement posts (lots of eyes)
-- Questions people are asking (${config.founderName} can answer)
-- Developers sharing relevant builds (${config.founderName} can suggest ${config.companyName})
-- Hot takes or debates ${config.founderName} can add a smart perspective to
-
-For each: tweet text (truncated), link, author + follower count, why comment here, suggested angle (NOT the comment itself — ${config.founderName} writes in their own voice), engagement score.
-
-### 2. Trends (top 5)
-What themes keep showing up? What's the community excited/frustrated/curious about?
-- Theme name, evidence tweets, sentiment (hype/frustration/curiosity/fatigue), how ${config.companyName} relates (be honest when it doesn't).
-
-### 3. New Tools & Companies
-Any new products, launches, or repos mentioned? For each: name, what it does, link, relationship to ${config.companyName} (competitor/potential_partner/irrelevant), one line on how it relates to ${config.companyName}'s space.
-
-### 4. Tutorial Ideas (top 3)
-Based on trends, suggest "Build X with ${config.companyName}" tutorials. Title, why timely, brief outline (3-5 bullets), effort estimate (quick/medium/deep).
-
-### 5. Run Summary
-One paragraph. Be concise. If the run is boring, say so.${config.customInstructions ? `\n\n## Additional Instructions\n${config.customInstructions}` : ''}`
-;
-}
-
-// ---------------------------------------------------------------------------
-// Core analysis function
-// ---------------------------------------------------------------------------
-
-async function analyzeTwitterData(tweets: NormalizedTweet[], config: AgentConfigValue): Promise<AnalysisResult> {
-  // Limit tweets to avoid payload size issues - prioritize by engagement
-  const sortedTweets = [...tweets]
-    .sort((a, b) => (b.likes + b.retweets + b.replies) - (a.likes + a.retweets + a.replies))
-    .slice(0, 100);
-
-  const tweetList = sortedTweets
+function formatTweetsForPrompt(tweets: NormalizedTweet[]): string {
+  return tweets
     .map((t, i) => {
       const engagement = t.likes + t.retweets + t.replies;
       const truncatedText = t.text.length > 500 ? t.text.slice(0, 500) + '...' : t.text;
@@ -435,31 +264,370 @@ Posted: ${t.created_at}
 "${truncatedText}"`;
     })
     .join('\n\n');
+}
 
-  const systemPrompt = buildSystemPrompt(config);
-  const analysisSchema = buildAnalysisSchema(config.companyName);
+// ---------------------------------------------------------------------------
+// Focused Analysis: Comment Opportunities
+// ---------------------------------------------------------------------------
+
+const commentOpportunitiesSchema = {
+  type: 'object',
+  properties: {
+    items: {
+      type: 'array',
+      description: 'Top 10-15 tweets where the founder could leave a valuable comment.',
+      items: {
+        type: 'object',
+        properties: {
+          tweet_text: { type: 'string', description: 'Truncated tweet text (max 200 chars)' },
+          tweet_url: { type: 'string', description: 'URL to the tweet' },
+          author: { type: 'string', description: 'Twitter handle of the author' },
+          author_followers: { type: 'number', description: 'Follower count of the author' },
+          why_comment: { type: 'string', description: 'Why this is a good opportunity to comment' },
+          suggested_angle: { type: 'string', description: 'Suggested angle for the comment — NOT the comment itself' },
+          engagement_score: { type: 'number', description: 'Combined engagement (likes + retweets + replies)' },
+        },
+        required: ['tweet_text', 'tweet_url', 'author', 'author_followers', 'why_comment', 'suggested_angle', 'engagement_score'],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['items'],
+  additionalProperties: false,
+} as const;
+
+async function analyzeCommentOpportunities(tweets: NormalizedTweet[], config: AgentConfigValue): Promise<CommentOpportunity[]> {
+  const tweetList = formatTweetsForPrompt(tweets);
+
+  const systemPrompt = `You are a marketing intelligence agent for ${config.companyName} (${config.companyWebsite}).
+
+${config.companyDescription}
+
+Context about the founder:
+${config.founderContext}
+
+Your ONLY job: Find the BEST tweets where ${config.founderName} could leave a valuable comment that naturally relates to ${config.companyName}.
+
+## What makes a good comment opportunity:
+- High engagement posts (lots of eyes on the conversation)
+- Questions people are asking that ${config.founderName} can answer with expertise
+- Developers sharing agent/AI builds where ${config.companyName} could genuinely help
+- Hot takes or debates where ${config.founderName} can add a smart, non-promotional perspective
+- Threads about problems ${config.companyName} solves
+
+## Rules:
+- Be selective — only include tweets where commenting would be valuable, not forced
+- Don't suggest commenting on the same accounts repeatedly — diversify
+- Prioritize recency and engagement
+- The suggested_angle should be a direction, NOT the actual comment — ${config.founderName} writes in their own voice
+- Be honest — if a tweet isn't a good fit, skip it
+${config.customInstructions ? `\n## Additional Instructions:\n${config.customInstructions}` : ''}`;
 
   const response = await openai.chat.completions.create({
-    model: 'gpt-4o-mini',
+    model: GPT_MODEL,
     messages: [
       { role: 'system', content: systemPrompt },
-      {
-        role: 'user',
-        content: `Here are ${tweets.length} scraped tweets from the last few hours. Analyze them and produce your intelligence report.\n\n${tweetList}`,
-      },
+      { role: 'user', content: `Find the best comment opportunities from these ${tweets.length} tweets:\n\n${tweetList}` },
     ],
     response_format: {
       type: 'json_schema',
-      json_schema: {
-        name: 'scout_analysis',
-        strict: true,
-        schema: analysisSchema,
-      },
+      json_schema: { name: 'comment_opportunities', strict: true, schema: commentOpportunitiesSchema },
     },
   });
 
-  const result = JSON.parse(response.choices[0].message.content || '{}');
-  return result as AnalysisResult;
+  const result = JSON.parse(response.choices[0].message.content || '{"items":[]}');
+  return result.items as CommentOpportunity[];
+}
+
+// ---------------------------------------------------------------------------
+// Focused Analysis: Trends
+// ---------------------------------------------------------------------------
+
+const trendsSchema = {
+  type: 'object',
+  properties: {
+    items: {
+      type: 'array',
+      description: 'Top 5-7 emerging themes from the data.',
+      items: {
+        type: 'object',
+        properties: {
+          theme: { type: 'string', description: 'Short theme name' },
+          evidence_tweets: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                text: { type: 'string', description: 'Tweet snippet as evidence (max 100 chars)' },
+                url: { type: 'string', description: 'URL to the tweet' },
+                author: { type: 'string', description: 'Twitter handle of the author' },
+              },
+              required: ['text', 'url', 'author'],
+              additionalProperties: false,
+            },
+            description: 'Example tweets as evidence with their URLs',
+          },
+          sentiment: { type: 'string', enum: ['hype', 'frustration', 'curiosity', 'fatigue'], description: 'Overall sentiment' },
+          company_relevance: { type: 'string', description: 'How this relates to the company — be honest when it does not' },
+        },
+        required: ['theme', 'evidence_tweets', 'sentiment', 'company_relevance'],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['items'],
+  additionalProperties: false,
+} as const;
+
+async function analyzeTrends(tweets: NormalizedTweet[], config: AgentConfigValue): Promise<Trend[]> {
+  const tweetList = formatTweetsForPrompt(tweets);
+
+  const systemPrompt = `You are a marketing intelligence agent for ${config.companyName} (${config.companyWebsite}).
+
+${config.companyDescription}
+
+Your ONLY job: Identify emerging TRENDS and THEMES from the Twitter data.
+
+## What to look for:
+- Recurring topics people keep discussing
+- Pain points developers are expressing
+- Excitement about new approaches or tools
+- Frustrations with current solutions
+- Debates and disagreements in the community
+- Shifts in how people talk about AI agents, memory, observability, etc.
+
+## For each trend:
+- Give it a clear, specific name (not generic like "AI is growing")
+- Include 2-4 evidence tweets with URLs
+- Assess the sentiment: hype, frustration, curiosity, or fatigue
+- Be honest about whether ${config.companyName} relates to this trend — don't force relevance
+
+## Rules:
+- Focus on patterns, not individual tweets
+- Be specific — "Developers frustrated with agent memory persistence" is better than "Memory is important"
+- If nothing interesting is trending, say so
+${config.customInstructions ? `\n## Additional Instructions:\n${config.customInstructions}` : ''}`;
+
+  const response = await openai.chat.completions.create({
+    model: GPT_MODEL,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: `Identify the key trends from these ${tweets.length} tweets:\n\n${tweetList}` },
+    ],
+    response_format: {
+      type: 'json_schema',
+      json_schema: { name: 'trends', strict: true, schema: trendsSchema },
+    },
+  });
+
+  const result = JSON.parse(response.choices[0].message.content || '{"items":[]}');
+  return result.items as Trend[];
+}
+
+// ---------------------------------------------------------------------------
+// Focused Analysis: New Tools & Companies
+// ---------------------------------------------------------------------------
+
+const toolsSchema = {
+  type: 'object',
+  properties: {
+    items: {
+      type: 'array',
+      description: 'New products, tools, launches, or repos mentioned.',
+      items: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Product or tool name' },
+          description: { type: 'string', description: 'What it does in one line' },
+          url: { type: 'string', description: 'Link to the tool/product website or repo' },
+          relationship: { type: 'string', enum: ['competitor', 'potential_partner', 'complementary', 'irrelevant'], description: 'Relationship to the company' },
+          company_relevance: { type: 'string', description: 'One line on how it relates to the company space' },
+          source_tweets: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                url: { type: 'string', description: 'URL to the tweet that mentioned this tool' },
+                author: { type: 'string', description: 'Twitter handle of the author' },
+              },
+              required: ['url', 'author'],
+              additionalProperties: false,
+            },
+            description: 'Tweets that mentioned this tool/company',
+          },
+        },
+        required: ['name', 'description', 'url', 'relationship', 'company_relevance', 'source_tweets'],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['items'],
+  additionalProperties: false,
+} as const;
+
+async function analyzeTools(tweets: NormalizedTweet[], config: AgentConfigValue): Promise<NewTool[]> {
+  const tweetList = formatTweetsForPrompt(tweets);
+
+  const systemPrompt = `You are a competitive intelligence agent for ${config.companyName} (${config.companyWebsite}).
+
+${config.companyDescription}
+
+Your ONLY job: Find NEW TOOLS, PRODUCTS, and COMPANIES mentioned in the Twitter data.
+
+## What to look for:
+- Product launches and announcements
+- GitHub repos being shared
+- New startups or tools people are excited about
+- Existing tools getting significant updates
+- Open source projects gaining traction
+
+## For each tool found:
+- Extract the actual name and URL (from the tweet or infer from context)
+- Describe what it does in one clear sentence
+- Classify relationship to ${config.companyName}: competitor, potential_partner, complementary, or irrelevant
+- Include the source tweets where you found it
+
+## Rules:
+- Only include actual products/tools, not concepts or ideas
+- Must have a real URL (website, GitHub, etc.)
+- Focus on things relevant to AI agents, developer tools, infrastructure
+- Don't include well-known established tools unless there's news about them
+${config.customInstructions ? `\n## Additional Instructions:\n${config.customInstructions}` : ''}`;
+
+  const response = await openai.chat.completions.create({
+    model: GPT_MODEL,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: `Find new tools and products mentioned in these ${tweets.length} tweets:\n\n${tweetList}` },
+    ],
+    response_format: {
+      type: 'json_schema',
+      json_schema: { name: 'tools', strict: true, schema: toolsSchema },
+    },
+  });
+
+  const result = JSON.parse(response.choices[0].message.content || '{"items":[]}');
+  return result.items as NewTool[];
+}
+
+// ---------------------------------------------------------------------------
+// Focused Analysis: Tutorial Ideas
+// ---------------------------------------------------------------------------
+
+const tutorialsSchema = {
+  type: 'object',
+  properties: {
+    items: {
+      type: 'array',
+      description: 'Top 3-5 tutorial ideas based on what developers are discussing.',
+      items: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'Tutorial title (e.g., "Build X with Y")' },
+          why_timely: { type: 'string', description: 'What trend or pain point this addresses' },
+          outline: {
+            type: 'array',
+            items: { type: 'string' },
+            description: '3-5 bullet point outline',
+          },
+          effort: { type: 'string', enum: ['quick', 'medium', 'deep'], description: 'Estimated effort: quick (1hr), medium (half day), deep (full day)' },
+          source_tweets: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                url: { type: 'string', description: 'URL to the tweet that inspired this idea' },
+                author: { type: 'string', description: 'Twitter handle of the author' },
+              },
+              required: ['url', 'author'],
+              additionalProperties: false,
+            },
+            description: 'Tweets that inspired this tutorial idea',
+          },
+        },
+        required: ['title', 'why_timely', 'outline', 'effort', 'source_tweets'],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['items'],
+  additionalProperties: false,
+} as const;
+
+async function analyzeTutorials(tweets: NormalizedTweet[], config: AgentConfigValue): Promise<TutorialIdea[]> {
+  const tweetList = formatTweetsForPrompt(tweets);
+
+  const systemPrompt = `You are a developer content strategist for ${config.companyName} (${config.companyWebsite}).
+
+${config.companyDescription}
+
+Your ONLY job: Come up with TUTORIAL IDEAS based on what developers are discussing and struggling with.
+
+## What makes a good tutorial idea:
+- Addresses a real pain point developers are expressing
+- Timely — relates to current trends or discussions
+- Showcases ${config.companyName} naturally (not forced)
+- Practical and actionable
+
+## For each tutorial:
+- Create a compelling title (e.g., "Build an AI Agent with Persistent Memory using ${config.companyName}")
+- Explain why it's timely (what trend/pain point it addresses)
+- Provide a 3-5 bullet outline
+- Estimate effort: quick (1hr blog post), medium (half-day deep dive), deep (full day comprehensive guide)
+- Include source tweets that inspired this idea
+
+## Rules:
+- Be creative but realistic
+- Focus on tutorials that would genuinely help developers
+- The tutorial should naturally involve ${config.companyName}, not feel shoehorned
+- If the data doesn't inspire good tutorials, return fewer items
+${config.customInstructions ? `\n## Additional Instructions:\n${config.customInstructions}` : ''}`;
+
+  const response = await openai.chat.completions.create({
+    model: GPT_MODEL,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: `Generate tutorial ideas based on these ${tweets.length} tweets:\n\n${tweetList}` },
+    ],
+    response_format: {
+      type: 'json_schema',
+      json_schema: { name: 'tutorials', strict: true, schema: tutorialsSchema },
+    },
+  });
+
+  const result = JSON.parse(response.choices[0].message.content || '{"items":[]}');
+  return result.items as TutorialIdea[];
+}
+
+// ---------------------------------------------------------------------------
+// Core analysis function - runs all analyses in parallel
+// ---------------------------------------------------------------------------
+
+async function analyzeTwitterData(tweets: NormalizedTweet[], config: AgentConfigValue): Promise<AnalysisResult> {
+  // Limit tweets to avoid payload size issues - prioritize by engagement
+  const sortedTweets = [...tweets]
+    .sort((a, b) => (b.likes + b.retweets + b.replies) - (a.likes + a.retweets + a.replies))
+    .slice(0, 150); // Increased limit since GPT-4o has better context handling
+
+  console.log(`[analyzeTwitterData] Running 4 focused analyses in parallel on ${sortedTweets.length} tweets...`);
+
+  // Run all analyses in parallel
+  const [comment_opportunities, trends, new_tools, tutorial_ideas] = await Promise.all([
+    config.sinks.opportunities ? analyzeCommentOpportunities(sortedTweets, config) : Promise.resolve([]),
+    config.sinks.trends ? analyzeTrends(sortedTweets, config) : Promise.resolve([]),
+    config.sinks.tools ? analyzeTools(sortedTweets, config) : Promise.resolve([]),
+    config.sinks.tutorials ? analyzeTutorials(sortedTweets, config) : Promise.resolve([]),
+  ]);
+
+  console.log(`[analyzeTwitterData] Analysis complete: ${comment_opportunities.length} opportunities, ${trends.length} trends, ${new_tools.length} tools, ${tutorial_ideas.length} tutorials`);
+
+  return {
+    comment_opportunities,
+    trends,
+    new_tools,
+    tutorial_ideas,
+    run_summary: `Analyzed ${sortedTweets.length} tweets. Found ${comment_opportunities.length} comment opportunities, ${trends.length} trends, ${new_tools.length} new tools, and ${tutorial_ideas.length} tutorial ideas.`,
+  };
 }
 
 // ---------------------------------------------------------------------------
