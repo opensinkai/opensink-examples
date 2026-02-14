@@ -1,19 +1,21 @@
 # Marketing Intelligence Agent (Scout)
 
-A marketing intelligence agent that scrapes Twitter via [Apify](https://apify.com/apidojo/twitter-scraper-lite), analyzes the results with GPT-4o-mini, and produces actionable marketing intel for OpenSink's founder. Identifies comment opportunities, trending themes, new tools in the space, and tutorial ideas.
+A configurable marketing intelligence agent that scrapes Twitter via [Apify](https://apify.com/apidojo/twitter-scraper-lite), analyzes the results with GPT-4o-mini, and produces actionable marketing intel. Identifies comment opportunities, trending themes, new tools in the space, and tutorial ideas.
+
+**Fully configurable** — set up for your own company by providing your company info, founder context, and custom instructions via OpenSink agent configuration. No code changes required.
 
 ## How It Works
 
 1. `POST /agent/run` triggers a full run
-2. Fetches agent config from OpenSink (checks if enabled, reads keywords and maxItems)
+2. Fetches agent config from OpenSink (company info, founder context, keywords, sink IDs)
 3. Scrapes Twitter via the Apify [Twitter Scraper Lite](https://apify.com/apidojo/twitter-scraper-lite) actor for configured keywords
 4. Filters out retweets, spam, and low-quality noise
 5. Uses GPT-4o-mini to analyze the tweets and produce 4 outputs:
-   - **Comment Opportunities** — high-engagement tweets where Dan could add value
+   - **Comment Opportunities** — high-engagement tweets where you could add value
    - **Trends** — recurring themes with sentiment analysis
    - **New Tools & Companies** — product launches and repos mentioned in the data
-   - **Tutorial Ideas** — "Build X with OpenSink" content ideas based on what's trending
-6. Stores each output category in its own OpenSink sink
+   - **Tutorial Ideas** — "Build X with [YourProduct]" content ideas based on what's trending
+6. Stores each output category in its own OpenSink sink (with resources linking to source tweets)
 7. Logs all activities to an OpenSink session
 8. Returns a Telegram-formatted summary
 
@@ -28,6 +30,7 @@ Fill in your `.env`:
 
 ```
 PORT=3002
+AGENT_ID=your_agent_id
 OPEN_SINK_API_KEY=your_open_sink_key
 OPENAI_API_KEY=your_openai_key
 APIFY_API_TOKEN=your_apify_api_token
@@ -41,26 +44,52 @@ APIFY_API_TOKEN=your_apify_api_token
 
 ### OpenSink Setup
 
-Create these entities in your OpenSink dashboard, then update the IDs in `src/routes/index.ts`:
+Create these entities in your OpenSink dashboard:
 
-- 1 Agent
+- 1 Agent (set the ID in your `.env` as `AGENT_ID`)
 - 4 Sinks: Comment Opportunities, Trends, Tools & Companies, Tutorial Ideas
 
-Set the agent configuration value to:
+Set the agent configuration value (JSON):
 
 ```json
 {
   "enabled": true,
-  "keywords": ["ai agents", "agent framework", "agent memory", "agent observability", "llm agents", "ai agent production", "mcp server"],
-  "maxItems": 200
+  "keywords": ["ai agents", "agent framework", "your product keywords"],
+  "maxItems": 200,
+  "companyName": "YourCompany",
+  "companyWebsite": "yourcompany.com",
+  "companyDescription": "YourCompany is [what your product does]. It provides [key features]. It's [stage/positioning].",
+  "founderName": "Your Name",
+  "founderContext": "- Solo founder at early stage.\n- Low social media following. Strategy: comment on high-traffic posts rather than posting into the void.",
+  "sinks": {
+    "opportunities": "uuid-of-opportunities-sink",
+    "trends": "uuid-of-trends-sink",
+    "tools": "uuid-of-tools-sink",
+    "tutorials": "uuid-of-tutorials-sink"
+  },
+  "customInstructions": "Optional: any additional instructions for the analysis"
 }
 ```
 
-| Config field | Type | Description |
-|---|---|---|
-| `enabled` | `boolean` | Toggle the agent on/off |
-| `keywords` | `string[]` | Twitter search keywords to scrape |
-| `maxItems` | `number` | Max tweets to scrape per run (default 200) |
+### Configuration Reference
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `enabled` | `boolean` | Yes | Toggle the agent on/off |
+| `keywords` | `string[]` | Yes | Twitter search keywords to scrape |
+| `maxItems` | `number` | No | Max tweets to scrape per run (default 200) |
+| `companyName` | `string` | Yes | Your company/product name |
+| `companyWebsite` | `string` | Yes | Your company website URL |
+| `companyDescription` | `string` | Yes | Description of what your product does |
+| `founderName` | `string` | Yes | Name of the person who will be commenting |
+| `founderContext` | `string` | Yes | Context about the founder's social media strategy |
+| `sinks.opportunities` | `string` | No* | Sink ID for comment opportunities |
+| `sinks.trends` | `string` | No* | Sink ID for trends |
+| `sinks.tools` | `string` | No* | Sink ID for new tools/companies |
+| `sinks.tutorials` | `string` | No* | Sink ID for tutorial ideas |
+| `customInstructions` | `string` | No | Additional instructions appended to the analysis prompt |
+
+*At least one sink ID is required.
 
 ## Running
 

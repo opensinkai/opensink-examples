@@ -27,14 +27,10 @@ const apify = new ApifyClient({
 });
 
 // ---------------------------------------------------------------------------
-// OpenSink entity IDs – replace with your own after creating them in the UI
+// OpenSink Agent ID – replace with your own after creating it in the UI
 // ---------------------------------------------------------------------------
 
-const AGENT_ID = '019c5475-f425-757d-aca6-89d24a171310';
-const OPPORTUNITIES_SINK_ID = '019c547c-909c-703f-ba89-ed43cb23dca1';
-const TRENDS_SINK_ID = '019c547c-9298-73ef-80d7-6f8897898e54';
-const TOOLS_SINK_ID = '019c547c-9497-71bc-accb-2bb463a74e5b';
-const TUTORIALS_SINK_ID = '019c547c-96bf-758a-8152-619119f78694';
+const AGENT_ID = process.env.AGENT_ID || '019c5475-f425-757d-aca6-89d24a171310';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -44,6 +40,22 @@ interface AgentConfigValue {
   enabled: boolean;
   keywords: string[];
   maxItems: number;
+  // Company/Product configuration
+  companyName: string;
+  companyWebsite: string;
+  companyDescription: string;
+  // User/Founder context
+  founderName: string;
+  founderContext: string;
+  // Sink IDs for storing results
+  sinks: {
+    opportunities: string;
+    trends: string;
+    tools: string;
+    tutorials: string;
+  };
+  // Optional custom instructions (appended to default prompt)
+  customInstructions?: string;
 }
 
 /** Shape returned by the apidojo/tweet-scraper Apify actor */
@@ -108,7 +120,12 @@ interface Trend {
   theme: string;
   evidence_tweets: TrendEvidence[];
   sentiment: 'hype' | 'frustration' | 'curiosity' | 'fatigue';
-  opensink_relevance: string;
+  company_relevance: string;
+}
+
+interface SourceTweet {
+  url: string;
+  author: string;
 }
 
 interface NewTool {
@@ -116,7 +133,8 @@ interface NewTool {
   description: string;
   url: string;
   relationship: 'competitor' | 'potential_partner' | 'irrelevant';
-  opensink_connection: string;
+  company_relevance: string;
+  source_tweets: SourceTweet[];
 }
 
 interface TutorialIdea {
@@ -124,6 +142,7 @@ interface TutorialIdea {
   why_timely: string;
   outline: string[];
   effort: 'quick' | 'medium' | 'deep';
+  source_tweets: SourceTweet[];
 }
 
 interface AnalysisResult {
@@ -182,118 +201,146 @@ function normalizeTweets(raw: ApifyTweet[]): NormalizedTweet[] {
 }
 
 // ---------------------------------------------------------------------------
-// JSON Schema for structured GPT output
+// JSON Schema for structured GPT output (parameterized by company name)
 // ---------------------------------------------------------------------------
 
-const analysisSchema = {
-  type: 'object',
-  properties: {
-    comment_opportunities: {
-      type: 'array',
-      description: 'Top 10 tweets where Dan could leave a valuable comment that naturally relates to OpenSink.',
-      items: {
-        type: 'object',
-        properties: {
-          tweet_text: { type: 'string', description: 'Truncated tweet text (max 200 chars)' },
-          tweet_url: { type: 'string', description: 'URL to the tweet' },
-          author: { type: 'string', description: 'Twitter handle of the author' },
-          author_followers: { type: 'number', description: 'Follower count of the author' },
-          why_comment: { type: 'string', description: 'Why this is a good opportunity to comment' },
-          suggested_angle: { type: 'string', description: 'Suggested angle for the comment — NOT the comment itself' },
-          engagement_score: { type: 'number', description: 'Combined engagement (likes + retweets + replies)' },
+function buildAnalysisSchema(companyName: string) {
+  return {
+    type: 'object',
+    properties: {
+      comment_opportunities: {
+        type: 'array',
+        description: `Top 10 tweets where the founder could leave a valuable comment that naturally relates to ${companyName}.`,
+        items: {
+          type: 'object',
+          properties: {
+            tweet_text: { type: 'string', description: 'Truncated tweet text (max 200 chars)' },
+            tweet_url: { type: 'string', description: 'URL to the tweet' },
+            author: { type: 'string', description: 'Twitter handle of the author' },
+            author_followers: { type: 'number', description: 'Follower count of the author' },
+            why_comment: { type: 'string', description: 'Why this is a good opportunity to comment' },
+            suggested_angle: { type: 'string', description: 'Suggested angle for the comment — NOT the comment itself' },
+            engagement_score: { type: 'number', description: 'Combined engagement (likes + retweets + replies)' },
+          },
+          required: ['tweet_text', 'tweet_url', 'author', 'author_followers', 'why_comment', 'suggested_angle', 'engagement_score'],
+          additionalProperties: false,
         },
-        required: ['tweet_text', 'tweet_url', 'author', 'author_followers', 'why_comment', 'suggested_angle', 'engagement_score'],
-        additionalProperties: false,
       },
-    },
-    trends: {
-      type: 'array',
-      description: 'Top 5 emerging themes from the scraped data.',
-      items: {
-        type: 'object',
-        properties: {
-          theme: { type: 'string', description: 'Short theme name' },
-          evidence_tweets: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                text: { type: 'string', description: 'Tweet snippet as evidence (max 100 chars)' },
-                url: { type: 'string', description: 'URL to the tweet' },
-                author: { type: 'string', description: 'Twitter handle of the author' },
+      trends: {
+        type: 'array',
+        description: 'Top 5 emerging themes from the scraped data.',
+        items: {
+          type: 'object',
+          properties: {
+            theme: { type: 'string', description: 'Short theme name' },
+            evidence_tweets: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  text: { type: 'string', description: 'Tweet snippet as evidence (max 100 chars)' },
+                  url: { type: 'string', description: 'URL to the tweet' },
+                  author: { type: 'string', description: 'Twitter handle of the author' },
+                },
+                required: ['text', 'url', 'author'],
+                additionalProperties: false,
               },
-              required: ['text', 'url', 'author'],
-              additionalProperties: false,
+              description: 'Example tweets as evidence with their URLs',
             },
-            description: 'Example tweets as evidence with their URLs',
+            sentiment: { type: 'string', enum: ['hype', 'frustration', 'curiosity', 'fatigue'], description: 'Overall sentiment' },
+            company_relevance: { type: 'string', description: `How ${companyName} relates — be honest when it does not` },
           },
-          sentiment: { type: 'string', enum: ['hype', 'frustration', 'curiosity', 'fatigue'], description: 'Overall sentiment' },
-          opensink_relevance: { type: 'string', description: 'How OpenSink relates — be honest when it does not' },
+          required: ['theme', 'evidence_tweets', 'sentiment', 'company_relevance'],
+          additionalProperties: false,
         },
-        required: ['theme', 'evidence_tweets', 'sentiment', 'opensink_relevance'],
-        additionalProperties: false,
       },
-    },
-    new_tools: {
-      type: 'array',
-      description: 'New products, launches, or repos mentioned in the data.',
-      items: {
-        type: 'object',
-        properties: {
-          name: { type: 'string', description: 'Product or tool name' },
-          description: { type: 'string', description: 'What it does in one line' },
-          url: { type: 'string', description: 'Link to the tool/product' },
-          relationship: { type: 'string', enum: ['competitor', 'potential_partner', 'irrelevant'], description: 'Relationship to OpenSink' },
-          opensink_connection: { type: 'string', description: 'One line on how it relates to OpenSink\'s space' },
-        },
-        required: ['name', 'description', 'url', 'relationship', 'opensink_connection'],
-        additionalProperties: false,
-      },
-    },
-    tutorial_ideas: {
-      type: 'array',
-      description: 'Top 3 "Build X with OpenSink" tutorial ideas based on trends.',
-      items: {
-        type: 'object',
-        properties: {
-          title: { type: 'string', description: 'Tutorial title' },
-          why_timely: { type: 'string', description: 'What trend this rides' },
-          outline: {
-            type: 'array',
-            items: { type: 'string' },
-            description: '3-5 bullet point outline',
+      new_tools: {
+        type: 'array',
+        description: 'New products, launches, or repos mentioned in the data.',
+        items: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: 'Product or tool name' },
+            description: { type: 'string', description: 'What it does in one line' },
+            url: { type: 'string', description: 'Link to the tool/product' },
+            relationship: { type: 'string', enum: ['competitor', 'potential_partner', 'irrelevant'], description: `Relationship to ${companyName}` },
+            company_relevance: { type: 'string', description: `One line on how it relates to ${companyName}'s space` },
+            source_tweets: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  url: { type: 'string', description: 'URL to the tweet that mentioned this tool' },
+                  author: { type: 'string', description: 'Twitter handle of the author' },
+                },
+                required: ['url', 'author'],
+                additionalProperties: false,
+              },
+              description: 'Tweets that mentioned this tool/company',
+            },
           },
-          effort: { type: 'string', enum: ['quick', 'medium', 'deep'], description: 'Estimated effort: quick (1hr), medium (half day), deep (full day)' },
+          required: ['name', 'description', 'url', 'relationship', 'company_relevance', 'source_tweets'],
+          additionalProperties: false,
         },
-        required: ['title', 'why_timely', 'outline', 'effort'],
-        additionalProperties: false,
+      },
+      tutorial_ideas: {
+        type: 'array',
+        description: `Top 3 "Build X with ${companyName}" tutorial ideas based on trends.`,
+        items: {
+          type: 'object',
+          properties: {
+            title: { type: 'string', description: 'Tutorial title' },
+            why_timely: { type: 'string', description: 'What trend this rides' },
+            outline: {
+              type: 'array',
+              items: { type: 'string' },
+              description: '3-5 bullet point outline',
+            },
+            effort: { type: 'string', enum: ['quick', 'medium', 'deep'], description: 'Estimated effort: quick (1hr), medium (half day), deep (full day)' },
+            source_tweets: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  url: { type: 'string', description: 'URL to the tweet that inspired this idea' },
+                  author: { type: 'string', description: 'Twitter handle of the author' },
+                },
+                required: ['url', 'author'],
+                additionalProperties: false,
+              },
+              description: 'Tweets that inspired this tutorial idea',
+            },
+          },
+          required: ['title', 'why_timely', 'outline', 'effort', 'source_tweets'],
+          additionalProperties: false,
+        },
+      },
+      run_summary: {
+        type: 'string',
+        description: 'One paragraph summary of this run. If nothing interesting was found, say so honestly.',
       },
     },
-    run_summary: {
-      type: 'string',
-      description: 'One paragraph summary of this run. If nothing interesting was found, say so honestly.',
-    },
-  },
-  required: ['comment_opportunities', 'trends', 'new_tools', 'tutorial_ideas', 'run_summary'],
-  additionalProperties: false,
-} as const;
+    required: ['comment_opportunities', 'trends', 'new_tools', 'tutorial_ideas', 'run_summary'],
+    additionalProperties: false,
+  } as const;
+}
 
 // ---------------------------------------------------------------------------
-// System prompt for Scout
+// System prompt builder (parameterized by config)
 // ---------------------------------------------------------------------------
 
-const SCOUT_SYSTEM_PROMPT = `You are Scout, a marketing intelligence agent for OpenSink (opensink.com).
+function buildSystemPrompt(config: AgentConfigValue): string {
+  return `You are Scout, a marketing intelligence agent for ${config.companyName} (${config.companyWebsite}).
 
-OpenSink is the memory and control layer for AI agents in production. It provides Sessions, Sinks, and Activities — primitives that let developers track what their agents do, store persistent memory, and maintain human oversight. It's framework-agnostic, API-first, and early stage.
+${config.companyDescription}
 
 Context about the founder:
-- Dan is a solo founder and developer at early stage.
-- Low social media following. Strategy: comment on high-traffic posts rather than posting into the void.
+${config.founderContext}
 
 Your job: analyze scraped Twitter data and produce marketing intelligence.
 
 ## Rules
-- Be blunt and honest. Don't force OpenSink relevance where there is none.
+- Be blunt and honest. Don't force ${config.companyName} relevance where there is none.
 - Skip low-quality tweets, spam, and engagement bait.
 - Don't suggest commenting on the same accounts repeatedly — diversify.
 - Prioritize recency and engagement.
@@ -302,32 +349,34 @@ Your job: analyze scraped Twitter data and produce marketing intelligence.
 ## Output sections
 
 ### 1. Comment Opportunities (top 10)
-Find tweets where Dan could leave a valuable comment that naturally relates to OpenSink. Prioritize:
+Find tweets where ${config.founderName} could leave a valuable comment that naturally relates to ${config.companyName}. Prioritize:
 - High engagement posts (lots of eyes)
-- Questions people are asking (Dan can answer)
-- Developers sharing agent builds (Dan can suggest OpenSink)
-- Hot takes or debates Dan can add a smart perspective to
+- Questions people are asking (${config.founderName} can answer)
+- Developers sharing relevant builds (${config.founderName} can suggest ${config.companyName})
+- Hot takes or debates ${config.founderName} can add a smart perspective to
 
-For each: tweet text (truncated), link, author + follower count, why comment here, suggested angle (NOT the comment itself — Dan writes in his own voice), engagement score.
+For each: tweet text (truncated), link, author + follower count, why comment here, suggested angle (NOT the comment itself — ${config.founderName} writes in their own voice), engagement score.
 
 ### 2. Trends (top 5)
 What themes keep showing up? What's the community excited/frustrated/curious about?
-- Theme name, evidence tweets, sentiment (hype/frustration/curiosity/fatigue), how OpenSink relates (be honest when it doesn't).
+- Theme name, evidence tweets, sentiment (hype/frustration/curiosity/fatigue), how ${config.companyName} relates (be honest when it doesn't).
 
 ### 3. New Tools & Companies
-Any new products, launches, or repos mentioned? For each: name, what it does, link, relationship to OpenSink (competitor/potential_partner/irrelevant), one line on how it relates to OpenSink's space.
+Any new products, launches, or repos mentioned? For each: name, what it does, link, relationship to ${config.companyName} (competitor/potential_partner/irrelevant), one line on how it relates to ${config.companyName}'s space.
 
 ### 4. Tutorial Ideas (top 3)
-Based on trends, suggest "Build X with OpenSink" tutorials. Title, why timely, brief outline (3-5 bullets), effort estimate (quick/medium/deep).
+Based on trends, suggest "Build X with ${config.companyName}" tutorials. Title, why timely, brief outline (3-5 bullets), effort estimate (quick/medium/deep).
 
 ### 5. Run Summary
-One paragraph. Be concise. If the run is boring, say so.`;
+One paragraph. Be concise. If the run is boring, say so.${config.customInstructions ? `\n\n## Additional Instructions\n${config.customInstructions}` : ''}`
+;
+}
 
 // ---------------------------------------------------------------------------
 // Core analysis function
 // ---------------------------------------------------------------------------
 
-async function analyzeTwitterData(tweets: NormalizedTweet[]): Promise<AnalysisResult> {
+async function analyzeTwitterData(tweets: NormalizedTweet[], config: AgentConfigValue): Promise<AnalysisResult> {
   // Limit tweets to avoid payload size issues - prioritize by engagement
   const sortedTweets = [...tweets]
     .sort((a, b) => (b.likes + b.retweets + b.replies) - (a.likes + a.retweets + a.replies))
@@ -344,10 +393,13 @@ Posted: ${t.created_at}
     })
     .join('\n\n');
 
+  const systemPrompt = buildSystemPrompt(config);
+  const analysisSchema = buildAnalysisSchema(config.companyName);
+
   const response = await openai.chat.completions.create({
     model: 'gpt-4o-mini',
     messages: [
-      { role: 'system', content: SCOUT_SYSTEM_PROMPT },
+      { role: 'system', content: systemPrompt },
       {
         role: 'user',
         content: `Here are ${tweets.length} scraped tweets from the last few hours. Analyze them and produce your intelligence report.\n\n${tweetList}`,
@@ -371,10 +423,10 @@ Posted: ${t.created_at}
 // Format Telegram message
 // ---------------------------------------------------------------------------
 
-function formatTelegramMessage(analysis: AnalysisResult): string {
+function formatTelegramMessage(analysis: AnalysisResult, companyName: string): string {
   const lines: string[] = [];
 
-  lines.push('--- SCOUT MARKETING INTEL ---\n');
+  lines.push(`--- ${companyName.toUpperCase()} MARKETING INTEL ---\n`);
 
   // Comment Opportunities
   if (analysis.comment_opportunities.length > 0) {
@@ -394,7 +446,7 @@ function formatTelegramMessage(analysis: AnalysisResult): string {
     lines.push('TRENDS\n');
     for (const trend of analysis.trends) {
       lines.push(`  ${trend.theme} [${trend.sentiment}]`);
-      lines.push(`  OpenSink relevance: ${trend.opensink_relevance}`);
+      lines.push(`  ${companyName} relevance: ${trend.company_relevance}`);
       const evidenceText = trend.evidence_tweets.slice(0, 2).map((e) => `@${e.author}: "${e.text}"`).join(' | ');
       lines.push(`  Evidence: ${evidenceText}`);
       lines.push('');
@@ -407,7 +459,7 @@ function formatTelegramMessage(analysis: AnalysisResult): string {
     for (const tool of analysis.new_tools) {
       lines.push(`  ${tool.name} — ${tool.description}`);
       lines.push(`  ${tool.url}`);
-      lines.push(`  Relationship: ${tool.relationship} | ${tool.opensink_connection}`);
+      lines.push(`  Relationship: ${tool.relationship} | ${tool.company_relevance}`);
       lines.push('');
     }
   }
@@ -495,6 +547,14 @@ export default async function routes(app: FastifyInstance) {
       return { success: false, reason: 'No keywords configured. Set keywords in the OpenSink agent configuration.' };
     }
 
+    if (!config.companyName || !config.companyDescription || !config.founderName || !config.founderContext) {
+      return { success: false, reason: 'Missing required config fields: companyName, companyDescription, founderName, founderContext' };
+    }
+
+    if (!config.sinks || (!config.sinks.opportunities && !config.sinks.trends && !config.sinks.tools && !config.sinks.tutorials)) {
+      return { success: false, reason: 'No sink IDs configured. Set at least one sink ID in the OpenSink agent configuration.' };
+    }
+
     // Start a new session
     const session = await openSink.agentSessions.create({
       agent_id: AGENT_ID,
@@ -554,7 +614,7 @@ export default async function routes(app: FastifyInstance) {
         `Analyzing ${tweets.length} tweets with GPT-4o-mini...`,
       );
 
-      const analysis = await analyzeTwitterData(tweets);
+      const analysis = await analyzeTwitterData(tweets, config);
 
       await logActivity(
         session.data.id,
@@ -588,9 +648,9 @@ export default async function routes(app: FastifyInstance) {
       );
 
       // 1. Comment Opportunities
-      if (analysis.comment_opportunities.length > 0) {
+      if (analysis.comment_opportunities.length > 0 && config.sinks.opportunities) {
         const oppItems = analysis.comment_opportunities.map((opp) => ({
-          sink_id: OPPORTUNITIES_SINK_ID,
+          sink_id: config.sinks.opportunities,
           title: `@${opp.author}: ${opp.tweet_text.slice(0, 80)}...`,
           body: `Why: ${opp.why_comment}\nAngle: ${opp.suggested_angle}`,
           url: opp.tweet_url,
@@ -606,7 +666,9 @@ export default async function routes(app: FastifyInstance) {
           ],
         }));
 
+        console.log('[Comment Opportunities] Creating items with payload:', JSON.stringify(oppItems, null, 2));
         const oppResult = await openSink.sinkItems.createMany(oppItems);
+        console.log('[Comment Opportunities] API response:', JSON.stringify(oppResult.data, null, 2));
 
         await logActivity(
           session.data.id,
@@ -618,14 +680,14 @@ export default async function routes(app: FastifyInstance) {
       }
 
       // 2. Trends
-      if (analysis.trends.length > 0) {
+      if (analysis.trends.length > 0 && config.sinks.trends) {
         const trendItems = analysis.trends.map((trend) => ({
-          sink_id: TRENDS_SINK_ID,
+          sink_id: config.sinks.trends,
           title: `${trend.theme} [${trend.sentiment}]`,
-          body: `Evidence: ${trend.evidence_tweets.map((e) => `@${e.author}: "${e.text}"`).join(' | ')}\nOpenSink relevance: ${trend.opensink_relevance}`,
+          body: `Evidence: ${trend.evidence_tweets.map((e) => `@${e.author}: "${e.text}"`).join(' | ')}\n${config.companyName} relevance: ${trend.company_relevance}`,
           fields: {
             sentiment: trend.sentiment,
-            opensink_relevance: trend.opensink_relevance,
+            company_relevance: trend.company_relevance,
           },
           resources: trend.evidence_tweets.map((e) => ({
             type: 'link' as const,
@@ -634,7 +696,9 @@ export default async function routes(app: FastifyInstance) {
           })),
         }));
 
+        console.log('[Trends] Creating items with payload:', JSON.stringify(trendItems, null, 2));
         const trendResult = await openSink.sinkItems.createMany(trendItems);
+        console.log('[Trends] API response:', JSON.stringify(trendResult.data, null, 2));
 
         await logActivity(
           session.data.id,
@@ -646,19 +710,26 @@ export default async function routes(app: FastifyInstance) {
       }
 
       // 3. New Tools & Companies
-      if (analysis.new_tools.length > 0) {
+      if (analysis.new_tools.length > 0 && config.sinks.tools) {
         const toolItems = analysis.new_tools.map((tool) => ({
-          sink_id: TOOLS_SINK_ID,
+          sink_id: config.sinks.tools,
           title: tool.name,
-          body: `${tool.description}\n${tool.opensink_connection}`,
+          body: `${tool.description}\n${tool.company_relevance}`,
           url: tool.url,
           fields: {
             relationship: tool.relationship,
-            opensink_connection: tool.opensink_connection,
+            company_relevance: tool.company_relevance,
           },
+          resources: tool.source_tweets.map((t) => ({
+            type: 'link' as const,
+            label: `@${t.author}'s Tweet`,
+            url: t.url,
+          })),
         }));
 
+        console.log('[Tools] Creating items with payload:', JSON.stringify(toolItems, null, 2));
         const toolResult = await openSink.sinkItems.createMany(toolItems);
+        console.log('[Tools] API response:', JSON.stringify(toolResult.data, null, 2));
 
         await logActivity(
           session.data.id,
@@ -670,18 +741,25 @@ export default async function routes(app: FastifyInstance) {
       }
 
       // 4. Tutorial Ideas
-      if (analysis.tutorial_ideas.length > 0) {
+      if (analysis.tutorial_ideas.length > 0 && config.sinks.tutorials) {
         const tutorialItems = analysis.tutorial_ideas.map((idea) => ({
-          sink_id: TUTORIALS_SINK_ID,
+          sink_id: config.sinks.tutorials,
           title: idea.title,
           body: `Why timely: ${idea.why_timely}\nOutline:\n${idea.outline.map((b) => `- ${b}`).join('\n')}`,
           fields: {
             effort: idea.effort,
             why_timely: idea.why_timely,
           },
+          resources: idea.source_tweets.map((t) => ({
+            type: 'link' as const,
+            label: `@${t.author}'s Tweet`,
+            url: t.url,
+          })),
         }));
 
+        console.log('[Tutorials] Creating items with payload:', JSON.stringify(tutorialItems, null, 2));
         const tutorialResult = await openSink.sinkItems.createMany(tutorialItems);
+        console.log('[Tutorials] API response:', JSON.stringify(tutorialResult.data, null, 2));
 
         await logActivity(
           session.data.id,
@@ -696,7 +774,7 @@ export default async function routes(app: FastifyInstance) {
       // Step 4: Format report and complete session
       // -----------------------------------------------------------------------
 
-      const telegramMessage = formatTelegramMessage(analysis);
+      const telegramMessage = formatTelegramMessage(analysis, config.companyName);
 
       await logActivity(
         session.data.id,
