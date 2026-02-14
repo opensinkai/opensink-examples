@@ -56,6 +56,14 @@ interface AgentConfigValue {
   };
   // Optional custom instructions (appended to default prompt)
   customInstructions?: string;
+  // Tweet filtering options
+  filters?: {
+    minLikes?: number;
+    minRetweets?: number;
+    minReplies?: number;
+    minAuthorFollowers?: number;
+    onlyVerified?: boolean;
+  };
 }
 
 /** Shape returned by the apidojo/tweet-scraper Apify actor */
@@ -157,12 +165,25 @@ interface AnalysisResult {
 // Apify: scrape tweets
 // ---------------------------------------------------------------------------
 
-async function scrapeTweets(keywords: string[], maxItems: number): Promise<ApifyTweet[]> {
+async function scrapeTweets(
+  keywords: string[],
+  maxItems: number,
+  filters?: AgentConfigValue['filters'],
+): Promise<ApifyTweet[]> {
   // Build search terms using Twitter advanced search syntax.
   // Each keyword becomes its own search term so the actor fetches across all of them.
-  const searchTerms = keywords.map((kw) => `${kw} lang:en`);
+  const searchTerms = keywords.map((kw) => {
+    let term = kw;
+    // Add engagement filters to the search query
+    if (filters?.minLikes) term += ` min_faves:${filters.minLikes}`;
+    if (filters?.minRetweets) term += ` min_retweets:${filters.minRetweets}`;
+    if (filters?.minReplies) term += ` min_replies:${filters.minReplies}`;
+    if (filters?.onlyVerified) term += ` filter:verified`;
+    return term;
+  });
 
   console.log(`Starting Apify tweet scraper with ${searchTerms.length} search terms, maxItems=${maxItems}`);
+  console.log('Search terms:', searchTerms);
 
   const run = await apify.actor('apidojo/twitter-scraper-lite').call({
     searchTerms,
@@ -176,17 +197,39 @@ async function scrapeTweets(keywords: string[], maxItems: number): Promise<Apify
 }
 
 /** Convert Apify output to our normalized format, filtering out noise */
-function normalizeTweets(raw: ApifyTweet[]): NormalizedTweet[] {
-  return raw
-    .filter((t) => {
-      // Skip retweets – they're duplicates
-      if (t.isRetweet) return false;
-      // Skip tweets with no meaningful text
-      if (!t.text || t.text.trim().length < 20) return false;
-      // Only keep tweets typed as "tweet"
-      if (t.type !== 'tweet') return false;
-      return true;
-    })
+function normalizeTweets(raw: ApifyTweet[], minAuthorFollowers?: number): NormalizedTweet[] {
+  console.log(`[normalizeTweets] Starting with ${raw.length} raw tweets`);
+  
+  let retweetCount = 0;
+  let shortTextCount = 0;
+  let wrongTypeCount = 0;
+  let lowFollowersCount = 0;
+
+  const filtered = raw.filter((t) => {
+    // Skip retweets – they're duplicates
+    if (t.isRetweet) { retweetCount++; return false; }
+    // Skip tweets with no meaningful text
+    if (!t.text || t.text.trim().length < 20) { shortTextCount++; return false; }
+    // Only keep tweets typed as "tweet"
+    if (t.type !== 'tweet') { wrongTypeCount++; return false; }
+    // Filter by minimum author followers
+    if (minAuthorFollowers && (t.author?.followers || 0) < minAuthorFollowers) { lowFollowersCount++; return false; }
+    return true;
+  });
+
+  console.log(`[normalizeTweets] Filtered out: ${retweetCount} retweets, ${shortTextCount} short/empty, ${wrongTypeCount} wrong type, ${lowFollowersCount} low followers`);
+  console.log(`[normalizeTweets] Remaining: ${filtered.length} tweets`);
+
+  // Deduplicate by tweet ID
+  const uniqueTweets = new Map<string, ApifyTweet>();
+  for (const t of filtered) {
+    if (!uniqueTweets.has(t.id)) {
+      uniqueTweets.set(t.id, t);
+    }
+  }
+  console.log(`[normalizeTweets] After deduplication: ${uniqueTweets.size} unique tweets`);
+
+  return Array.from(uniqueTweets.values())
     .map((t) => ({
       id: t.id,
       text: t.text,
@@ -579,8 +622,8 @@ export default async function routes(app: FastifyInstance) {
         state: { phase: 'scraping', keywords, maxItems },
       });
 
-      const rawTweets = await scrapeTweets(keywords, maxItems);
-      const tweets = normalizeTweets(rawTweets);
+      const rawTweets = await scrapeTweets(keywords, maxItems, config.filters);
+      const tweets = normalizeTweets(rawTweets, config.filters?.minAuthorFollowers);
 
       await logActivity(
         session.data.id,
@@ -662,7 +705,7 @@ export default async function routes(app: FastifyInstance) {
           },
           resources: [
             { type: 'link' as const, label: 'View Tweet', url: opp.tweet_url },
-            { type: 'link' as const, label: `@${opp.author}'s Profile`, url: `https://twitter.com/${opp.author}` },
+            { type: 'link' as const, label: `${opp.author}'s Profile`, url: `https://twitter.com/${opp.author}` },
           ],
         }));
 
@@ -691,7 +734,7 @@ export default async function routes(app: FastifyInstance) {
           },
           resources: trend.evidence_tweets.map((e) => ({
             type: 'link' as const,
-            label: `@${e.author}'s Tweet`,
+            label: `${e.author}'s Tweet`,
             url: e.url,
           })),
         }));
@@ -722,7 +765,7 @@ export default async function routes(app: FastifyInstance) {
           },
           resources: tool.source_tweets.map((t) => ({
             type: 'link' as const,
-            label: `@${t.author}'s Tweet`,
+            label: `${t.author}'s Tweet`,
             url: t.url,
           })),
         }));
@@ -752,7 +795,7 @@ export default async function routes(app: FastifyInstance) {
           },
           resources: idea.source_tweets.map((t) => ({
             type: 'link' as const,
-            label: `@${t.author}'s Tweet`,
+            label: `${t.author}'s Tweet`,
             url: t.url,
           })),
         }));
