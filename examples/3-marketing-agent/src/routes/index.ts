@@ -114,7 +114,7 @@ interface CommentOpportunity {
   author: string;
   author_followers: number;
   why_comment: string;
-  suggested_angle: string;
+  draft_comment: string;
   engagement_score: number;
 }
 
@@ -126,8 +126,10 @@ interface TrendEvidence {
 
 interface Trend {
   theme: string;
+  tweet_count: number;
   evidence_tweets: TrendEvidence[];
-  sentiment: 'hype' | 'frustration' | 'curiosity' | 'fatigue';
+  why_trending: string;
+  sentiment: 'hype' | 'frustration' | 'curiosity' | 'fatigue' | 'debate';
   company_relevance: string;
 }
 
@@ -145,12 +147,20 @@ interface NewTool {
   source_tweets: SourceTweet[];
 }
 
+interface TutorialSourceTweet {
+  url: string;
+  author: string;
+  relevance: string;
+}
+
 interface TutorialIdea {
   title: string;
-  why_timely: string;
+  the_hook: string;
+  demand_signal: string;
+  tweet_count: number;
+  source_tweets: TutorialSourceTweet[];
   outline: string[];
   effort: 'quick' | 'medium' | 'deep';
-  source_tweets: SourceTweet[];
 }
 
 interface AnalysisResult {
@@ -199,7 +209,7 @@ async function scrapeTweets(
 /** Convert Apify output to our normalized format, filtering out noise */
 function normalizeTweets(raw: ApifyTweet[], minAuthorFollowers?: number): NormalizedTweet[] {
   console.log(`[normalizeTweets] Starting with ${raw.length} raw tweets`);
-  
+
   let retweetCount = 0;
   let shortTextCount = 0;
   let wrongTypeCount = 0;
@@ -275,7 +285,7 @@ const commentOpportunitiesSchema = {
   properties: {
     items: {
       type: 'array',
-      description: 'Top 10-15 tweets where the founder could leave a valuable comment.',
+      description: 'Only the TOP 3-5 BEST opportunities. Quality over quantity. Return fewer if there are not enough high-quality matches.',
       items: {
         type: 'object',
         properties: {
@@ -283,11 +293,11 @@ const commentOpportunitiesSchema = {
           tweet_url: { type: 'string', description: 'URL to the tweet' },
           author: { type: 'string', description: 'Twitter handle of the author' },
           author_followers: { type: 'number', description: 'Follower count of the author' },
-          why_comment: { type: 'string', description: 'Why this is a good opportunity to comment' },
-          suggested_angle: { type: 'string', description: 'Suggested angle for the comment — NOT the comment itself' },
+          why_comment: { type: 'string', description: 'Why this is a HIGH-IMPACT opportunity — what makes it worth commenting on' },
+          draft_comment: { type: 'string', description: 'A ready-to-use draft comment (will be edited by human before posting)' },
           engagement_score: { type: 'number', description: 'Combined engagement (likes + retweets + replies)' },
         },
-        required: ['tweet_text', 'tweet_url', 'author', 'author_followers', 'why_comment', 'suggested_angle', 'engagement_score'],
+        required: ['tweet_text', 'tweet_url', 'author', 'author_followers', 'why_comment', 'draft_comment', 'engagement_score'],
         additionalProperties: false,
       },
     },
@@ -299,28 +309,69 @@ const commentOpportunitiesSchema = {
 async function analyzeCommentOpportunities(tweets: NormalizedTweet[], config: AgentConfigValue): Promise<CommentOpportunity[]> {
   const tweetList = formatTweetsForPrompt(tweets);
 
-  const systemPrompt = `You are a marketing intelligence agent for ${config.companyName} (${config.companyWebsite}).
+  const systemPrompt = `You are a strategic Twitter growth advisor for ${config.companyName} (${config.companyWebsite}).
 
 ${config.companyDescription}
 
 Context about the founder:
 ${config.founderContext}
 
-Your ONLY job: Find the BEST tweets where ${config.founderName} could leave a valuable comment that naturally relates to ${config.companyName}.
+Your job: Find 3-5 tweets where a smart comment could convert the author or their audience into followers. We want people who see our comment to think "this person gets it, I should follow them."
 
-## What makes a good comment opportunity:
-- High engagement posts (lots of eyes on the conversation)
-- Questions people are asking that ${config.founderName} can answer with expertise
-- Developers sharing agent/AI builds where ${config.companyName} could genuinely help
-- Hot takes or debates where ${config.founderName} can add a smart, non-promotional perspective
-- Threads about problems ${config.companyName} solves
+## The GOAL of each comment:
+Turn readers into followers by demonstrating expertise, personality, or both.
 
-## Rules:
-- Be selective — only include tweets where commenting would be valuable, not forced
-- Don't suggest commenting on the same accounts repeatedly — diversify
-- Prioritize recency and engagement
-- The suggested_angle should be a direction, NOT the actual comment — ${config.founderName} writes in their own voice
-- Be honest — if a tweet isn't a good fit, skip it
+## IDEAL tweet targets:
+
+### 1. Our exact audience discussing our exact problem
+- Developers struggling with agent memory, state, observability
+- People building AI agents and hitting the walls we solve
+- Questions about how to track/debug/monitor agents in production
+- Frustration posts about problems ${config.companyName} addresses
+→ Comment with genuine expertise that makes them want to know more
+
+### 2. Influential people in our space
+- AI/agent builders with large followings discussing relevant topics
+- Developer advocates, founders, engineers at AI companies
+- People whose followers are our target users
+→ Comment something smart/funny that gets their attention + shows we know our stuff
+
+### 3. Viral conversations about our domain
+- Hot debates about AI agents, LLMs in production, agent frameworks
+- Trending threads where our perspective would stand out
+→ Comment with a unique angle that positions us as experts
+
+## What makes a FOLLOW-WORTHY comment:
+- Shows deep expertise without being preachy
+- Has personality — witty, direct, or refreshingly honest
+- Adds something nobody else in the replies said
+- Makes people curious about who wrote it
+- Short and punchy (1-2 sentences)
+
+## SKIP these:
+- Tweets with no connection to AI agents, developer tools, or production infrastructure
+- Generic AI hype with audiences that aren't developers
+- Topics where we can't demonstrate relevant expertise
+- Anything where we'd sound like every other reply
+- **News accounts and publications** (TechCrunch, VentureBeat, TheVerge, Wired, etc.)
+- **Brand/company accounts** (official accounts of companies, not individual employees)
+- **Bot-like accounts** or automated news aggregators
+- **Accounts that just repost headlines** without original commentary
+
+## ONLY target REAL HUMANS:
+- Individual developers, founders, engineers with personal accounts
+- People sharing their own experiences, opinions, or projects
+- Accounts where a real person is clearly behind the tweets
+- Look for signs of personality: opinions, jokes, personal projects, complaints
+
+## NEVER:
+- Write generic agreement ("So true!", "This is the way")
+- Sound like a LinkedIn post
+- Force a mention of ${config.companyName} — only if genuinely natural
+- Use hashtags or excessive emojis
+
+## Output:
+Return 3-5 opportunities where our comment could realistically earn followers. Quality over quantity — 0 is fine if nothing fits.
 ${config.customInstructions ? `\n## Additional Instructions:\n${config.customInstructions}` : ''}`;
 
   const response = await openai.chat.completions.create({
@@ -348,11 +399,12 @@ const trendsSchema = {
   properties: {
     items: {
       type: 'array',
-      description: 'Top 5-7 emerging themes from the data.',
+      description: 'Only 2-4 REAL trends backed by many tweets. Return fewer or zero if no real trends exist.',
       items: {
         type: 'object',
         properties: {
-          theme: { type: 'string', description: 'Short theme name' },
+          theme: { type: 'string', description: 'Clear trend name (tool, technology, technique, or topic)' },
+          tweet_count: { type: 'number', description: 'Approximate number of tweets in the dataset discussing this trend' },
           evidence_tweets: {
             type: 'array',
             items: {
@@ -365,12 +417,13 @@ const trendsSchema = {
               required: ['text', 'url', 'author'],
               additionalProperties: false,
             },
-            description: 'Example tweets as evidence with their URLs',
+            description: '3-5 example tweets showing this trend',
           },
-          sentiment: { type: 'string', enum: ['hype', 'frustration', 'curiosity', 'fatigue'], description: 'Overall sentiment' },
+          why_trending: { type: 'string', description: 'Why is this trending NOW? What triggered it?' },
+          sentiment: { type: 'string', enum: ['hype', 'frustration', 'curiosity', 'fatigue', 'debate'], description: 'Overall sentiment' },
           company_relevance: { type: 'string', description: 'How this relates to the company — be honest when it does not' },
         },
-        required: ['theme', 'evidence_tweets', 'sentiment', 'company_relevance'],
+        required: ['theme', 'tweet_count', 'evidence_tweets', 'why_trending', 'sentiment', 'company_relevance'],
         additionalProperties: false,
       },
     },
@@ -382,30 +435,39 @@ const trendsSchema = {
 async function analyzeTrends(tweets: NormalizedTweet[], config: AgentConfigValue): Promise<Trend[]> {
   const tweetList = formatTweetsForPrompt(tweets);
 
-  const systemPrompt = `You are a marketing intelligence agent for ${config.companyName} (${config.companyWebsite}).
+  const systemPrompt = `You are a trend analyst looking for REAL trends in Twitter data for ${config.companyName} (${config.companyWebsite}).
 
 ${config.companyDescription}
 
-Your ONLY job: Identify emerging TRENDS and THEMES from the Twitter data.
+Your job: Find REAL trends — topics that MANY people are discussing, not just a few tweets.
 
-## What to look for:
-- Recurring topics people keep discussing
-- Pain points developers are expressing
-- Excitement about new approaches or tools
-- Frustrations with current solutions
-- Debates and disagreements in the community
-- Shifts in how people talk about AI agents, memory, observability, etc.
+## What counts as a REAL trend:
+- A tool/product that multiple people are talking about (e.g., "Everyone's trying Claude's new computer use feature")
+- A technology or technique gaining traction (e.g., "MCP servers are exploding in popularity")
+- A new way of doing things spreading through the community (e.g., "Developers moving from LangChain to lighter frameworks")
+- A debate or controversy many people are weighing in on
+- A problem multiple people are independently complaining about
+
+## STRICT requirements:
+- Must appear in AT LEAST 5-10+ tweets in the dataset to be a trend
+- Multiple different authors discussing the same thing
+- Not just one viral tweet — actual pattern across the data
+
+## NOT a trend:
+- A single tweet, even if viral
+- Generic topics that are always discussed (e.g., "AI is useful")
+- Things only 1-2 people mentioned
+- Vague themes you can't point to specific evidence for
 
 ## For each trend:
-- Give it a clear, specific name (not generic like "AI is growing")
-- Include 2-4 evidence tweets with URLs
-- Assess the sentiment: hype, frustration, curiosity, or fatigue
-- Be honest about whether ${config.companyName} relates to this trend — don't force relevance
+- Name it specifically (tool name, technique, debate topic)
+- Count approximately how many tweets discuss it
+- Include 3-5 evidence tweets from DIFFERENT authors
+- Explain WHY it's trending now (what triggered it?)
+- Assess sentiment: hype, frustration, curiosity, fatigue, or debate
 
-## Rules:
-- Focus on patterns, not individual tweets
-- Be specific — "Developers frustrated with agent memory persistence" is better than "Memory is important"
-- If nothing interesting is trending, say so
+## Output:
+Return only 2-4 REAL trends. If the data doesn't have clear trends, return fewer or zero. Quality over quantity — don't invent trends that aren't there.
 ${config.customInstructions ? `\n## Additional Instructions:\n${config.customInstructions}` : ''}`;
 
   const response = await openai.chat.completions.create({
@@ -519,33 +581,36 @@ const tutorialsSchema = {
   properties: {
     items: {
       type: 'array',
-      description: 'Top 3-5 tutorial ideas based on what developers are discussing.',
+      description: 'Only 2-3 SPECIFIC, CONCRETE tutorial ideas with proven demand. Return fewer or zero if nothing qualifies.',
       items: {
         type: 'object',
         properties: {
-          title: { type: 'string', description: 'Tutorial title (e.g., "Build X with Y")' },
-          why_timely: { type: 'string', description: 'What trend or pain point this addresses' },
-          outline: {
-            type: 'array',
-            items: { type: 'string' },
-            description: '3-5 bullet point outline',
-          },
-          effort: { type: 'string', enum: ['quick', 'medium', 'deep'], description: 'Estimated effort: quick (1hr), medium (half day), deep (full day)' },
+          title: { type: 'string', description: 'Very specific tutorial title with concrete outcome (e.g., "Build a Slack bot that summarizes GitHub PRs and posts daily standups")' },
+          the_hook: { type: 'string', description: 'One sentence that would make a developer click — the exciting/useful outcome' },
+          demand_signal: { type: 'string', description: 'What evidence shows people actually want this? (e.g., "15+ tweets asking how to do X" or "Multiple devs sharing failed attempts at Y")' },
+          tweet_count: { type: 'number', description: 'Approximate number of tweets showing demand for this topic' },
           source_tweets: {
             type: 'array',
             items: {
               type: 'object',
               properties: {
-                url: { type: 'string', description: 'URL to the tweet that inspired this idea' },
-                author: { type: 'string', description: 'Twitter handle of the author' },
+                url: { type: 'string', description: 'URL to the tweet' },
+                author: { type: 'string', description: 'Twitter handle' },
+                relevance: { type: 'string', description: 'How this tweet shows demand (question asked, problem shared, etc.)' },
               },
-              required: ['url', 'author'],
+              required: ['url', 'author', 'relevance'],
               additionalProperties: false,
             },
-            description: 'Tweets that inspired this tutorial idea',
+            description: '3-5 tweets proving demand for this tutorial',
           },
+          outline: {
+            type: 'array',
+            items: { type: 'string' },
+            description: '4-6 specific steps with concrete details',
+          },
+          effort: { type: 'string', enum: ['quick', 'medium', 'deep'], description: 'quick (2-3hr), medium (half day), deep (full day+)' },
         },
-        required: ['title', 'why_timely', 'outline', 'effort', 'source_tweets'],
+        required: ['title', 'the_hook', 'demand_signal', 'tweet_count', 'source_tweets', 'outline', 'effort'],
         additionalProperties: false,
       },
     },
@@ -557,30 +622,51 @@ const tutorialsSchema = {
 async function analyzeTutorials(tweets: NormalizedTweet[], config: AgentConfigValue): Promise<TutorialIdea[]> {
   const tweetList = formatTweetsForPrompt(tweets);
 
-  const systemPrompt = `You are a developer content strategist for ${config.companyName} (${config.companyWebsite}).
+  const systemPrompt = `You are a developer content strategist who only creates tutorials with PROVEN DEMAND.
 
-${config.companyDescription}
+${config.companyName}: ${config.companyDescription}
 
-Your ONLY job: Come up with TUTORIAL IDEAS based on what developers are discussing and struggling with.
+Your job: Find 2-3 ULTRA-SPECIFIC tutorial ideas that MANY developers clearly want, based on the tweet data.
 
-## What makes a good tutorial idea:
-- Addresses a real pain point developers are expressing
-- Timely — relates to current trends or discussions
-- Showcases ${config.companyName} naturally (not forced)
-- Practical and actionable
+## What we're looking for:
+
+### SPECIFIC means:
+- NOT: "Build an AI Agent with Memory" 
+- YES: "Build a customer support bot that remembers past conversations and escalates to humans when confidence is low"
+
+- NOT: "Session Tracking for Agents"
+- YES: "Build a coding assistant that tracks your debugging session and suggests fixes based on what you've already tried"
+
+- NOT: "Agent Observability Tutorial"  
+- YES: "Build a Slack bot that alerts you when your AI agent starts hallucinating or goes off-script, with example logs"
+
+The title should describe a COMPLETE, USABLE THING someone can build — not an abstract concept.
+
+### PROVEN DEMAND means:
+- Multiple tweets (5+) asking how to do something similar
+- Several developers sharing the same struggle or question
+- A trending topic where people clearly need guidance
+- NOT just 1-2 tweets mentioning something vaguely related
 
 ## For each tutorial:
-- Create a compelling title (e.g., "Build an AI Agent with Persistent Memory using ${config.companyName}")
-- Explain why it's timely (what trend/pain point it addresses)
-- Provide a 3-5 bullet outline
-- Estimate effort: quick (1hr blog post), medium (half-day deep dive), deep (full day comprehensive guide)
-- Include source tweets that inspired this idea
+1. **Title**: Ultra-specific, describes concrete end result
+2. **The hook**: One exciting sentence that makes devs click
+3. **Demand signal**: Explain what in the data proves people want this
+4. **Tweet count**: How many tweets show this demand
+5. **Source tweets**: 3-5 actual tweets proving the demand (with why each is relevant)
+6. **Outline**: 4-6 specific implementation steps
 
-## Rules:
-- Be creative but realistic
-- Focus on tutorials that would genuinely help developers
-- The tutorial should naturally involve ${config.companyName}, not feel shoehorned
-- If the data doesn't inspire good tutorials, return fewer items
+## HARD REQUIREMENTS:
+- Must have 5+ tweets showing demand (questions, complaints, failed attempts, requests)
+- Must be specific enough that the reader knows exactly what they'll build
+- Must naturally use ${config.companyName} (but the tutorial idea should be valuable regardless)
+
+## DO NOT:
+- Invent demand that isn't in the data
+- Create generic/abstract tutorial ideas
+- Force ideas when the data doesn't support them
+
+Return 2-3 ideas MAX. Zero is fine if nothing has enough demand.
 ${config.customInstructions ? `\n## Additional Instructions:\n${config.customInstructions}` : ''}`;
 
   const response = await openai.chat.completions.create({
@@ -647,7 +733,7 @@ function formatTelegramMessage(analysis: AnalysisResult, companyName: string): s
       lines.push(`  "${opp.tweet_text}"`);
       lines.push(`  ${opp.tweet_url}`);
       lines.push(`  Why: ${opp.why_comment}`);
-      lines.push(`  Angle: ${opp.suggested_angle}`);
+      lines.push(`  Draft: ${opp.draft_comment}`);
       lines.push('');
     }
   }
@@ -656,7 +742,8 @@ function formatTelegramMessage(analysis: AnalysisResult, companyName: string): s
   if (analysis.trends.length > 0) {
     lines.push('TRENDS\n');
     for (const trend of analysis.trends) {
-      lines.push(`  ${trend.theme} [${trend.sentiment}]`);
+      lines.push(`  ${trend.theme} [${trend.sentiment}] (~${trend.tweet_count} tweets)`);
+      lines.push(`  Why trending: ${trend.why_trending}`);
       lines.push(`  ${companyName} relevance: ${trend.company_relevance}`);
       const evidenceText = trend.evidence_tweets.slice(0, 2).map((e) => `@${e.author}: "${e.text}"`).join(' | ');
       lines.push(`  Evidence: ${evidenceText}`);
@@ -679,8 +766,10 @@ function formatTelegramMessage(analysis: AnalysisResult, companyName: string): s
   if (analysis.tutorial_ideas.length > 0) {
     lines.push('TUTORIAL IDEAS\n');
     for (const idea of analysis.tutorial_ideas) {
-      lines.push(`  "${idea.title}" [${idea.effort}]`);
-      lines.push(`  Why now: ${idea.why_timely}`);
+      lines.push(`  "${idea.title}" [${idea.effort}] (~${idea.tweet_count} tweets showing demand)`);
+      lines.push(`  Hook: ${idea.the_hook}`);
+      lines.push(`  Demand: ${idea.demand_signal}`);
+      lines.push(`  Outline:`);
       for (const bullet of idea.outline) {
         lines.push(`    - ${bullet}`);
       }
@@ -863,13 +952,13 @@ export default async function routes(app: FastifyInstance) {
         const oppItems = analysis.comment_opportunities.map((opp) => ({
           sink_id: config.sinks.opportunities,
           title: `@${opp.author}: ${opp.tweet_text.slice(0, 80)}...`,
-          body: `Why: ${opp.why_comment}\nAngle: ${opp.suggested_angle}`,
+          body: `Why: ${opp.why_comment}\n\nDraft comment:\n${opp.draft_comment}`,
           url: opp.tweet_url,
           fields: {
             author: opp.author,
             author_followers: opp.author_followers,
             engagement_score: opp.engagement_score,
-            suggested_angle: opp.suggested_angle,
+            draft_comment: opp.draft_comment,
           },
           resources: [
             { type: 'link' as const, label: 'View Tweet', url: opp.tweet_url },
@@ -894,10 +983,12 @@ export default async function routes(app: FastifyInstance) {
       if (analysis.trends.length > 0 && config.sinks.trends) {
         const trendItems = analysis.trends.map((trend) => ({
           sink_id: config.sinks.trends,
-          title: `${trend.theme} [${trend.sentiment}]`,
-          body: `Evidence: ${trend.evidence_tweets.map((e) => `@${e.author}: "${e.text}"`).join(' | ')}\n${config.companyName} relevance: ${trend.company_relevance}`,
+          title: `${trend.theme} [${trend.sentiment}] (~${trend.tweet_count} tweets)`,
+          body: `Why trending: ${trend.why_trending}\n\nEvidence: ${trend.evidence_tweets.map((e) => `@${e.author}: "${e.text}"`).join(' | ')}\n\n${config.companyName} relevance: ${trend.company_relevance}`,
           fields: {
             sentiment: trend.sentiment,
+            tweet_count: trend.tweet_count,
+            why_trending: trend.why_trending,
             company_relevance: trend.company_relevance,
           },
           resources: trend.evidence_tweets.map((e) => ({
@@ -956,14 +1047,16 @@ export default async function routes(app: FastifyInstance) {
         const tutorialItems = analysis.tutorial_ideas.map((idea) => ({
           sink_id: config.sinks.tutorials,
           title: idea.title,
-          body: `Why timely: ${idea.why_timely}\nOutline:\n${idea.outline.map((b) => `- ${b}`).join('\n')}`,
+          body: `${idea.the_hook}\n\nDemand (${idea.tweet_count} tweets): ${idea.demand_signal}\n\nOutline:\n${idea.outline.map((b) => `- ${b}`).join('\n')}`,
           fields: {
             effort: idea.effort,
-            why_timely: idea.why_timely,
+            the_hook: idea.the_hook,
+            demand_signal: idea.demand_signal,
+            tweet_count: idea.tweet_count,
           },
           resources: idea.source_tweets.map((t) => ({
             type: 'link' as const,
-            label: `${t.author}'s Tweet`,
+            label: `${t.author}: ${t.relevance}`,
             url: t.url,
           })),
         }));
